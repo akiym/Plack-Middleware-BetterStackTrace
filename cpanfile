@@ -4,7 +4,8 @@ requires 'JSON',                            '2.57';
 requires 'Plack',                           '1.0023';
 requires 'Text::Xslate',                    '>=2.00';
 requires 'Term::ANSIColor',                 '>=4.00';
-requires 'Devel::StackTrace::WithLexicals', '0.10';
+requires 'Devel::StackTrace',               '>=2.00';
+requires 'Devel::StackTrace::WithLexicals', '>=2.00';
 requires 'Eval::Closure',                   '0.13';
 
 on 'test' => sub {

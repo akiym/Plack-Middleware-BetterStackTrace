@@ -58,8 +58,10 @@ sub call {
     local $SIG{__DIE__} = sub {
         $|     = 1;
         $trace = Devel::StackTrace::WithLexicals->new(
-            indent => 1, message => munge_error($_[0], [caller]),
-            ignore_package => __PACKAGE__,
+            indent             => 1,
+            message            => munge_error($_[0], [caller]),
+            ignore_package     => __PACKAGE__,
+            unsafe_ref_capture => 1,
         );
         die @_;
     };
