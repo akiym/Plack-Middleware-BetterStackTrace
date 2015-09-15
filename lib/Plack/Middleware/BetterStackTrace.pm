@@ -15,20 +15,44 @@ use Text::Xslate;
 use Plack::Request;
 use Term::ANSIColor;
 use Text::Xslate::Util;
+use Scalar::Util qw(refaddr);
 use Devel::StackTrace::WithLexicals;
+use Eval::Closure ();
 use Plack::Util::Accessor qw( force no_print_errors );
+
+{
+    # Hide from stacktrace's own lexicals
+    my %traces;
+    sub _traces {
+        if (@_ > 1) {
+            $traces{$_[0]} = $_[1];
+        } else {
+            $traces{$_[0]};
+        }
+    }
+}
 
 my $dumper = sub {
     my $value = shift;
     $value = $$value if ref $value eq 'SCALAR' or ref $value eq 'REF';
     my $d = Data::Dumper->new([$value]);
-    $d->Indent(1)->Terse(1)->Deparse(1);
+    $d->Indent(1)->Useqq(1)->Terse(1)->Deparse(1);
     chomp(my $dump = $d->Dump);
     $dump;
 };
 
 sub call {
     my ($self, $env) = @_;
+
+    if ($env->{PATH_INFO} =~ m!/__better_errors/(.+?)/(\w+)!) {
+        my ($id, $method) = ($1, $2);
+        my %opt = (
+            id     => $id,
+            method => $method,
+        );
+        my $response = internal_call($env, %opt);
+        return [ 200, [ 'Content-Type', 'application/json' ], [ encode_json($response) ] ];
+    }
 
     my $trace;
     local $SIG{__DIE__} = sub {
@@ -57,6 +81,7 @@ sub call {
         && ($caught
             || ($self->force && ref $res eq 'ARRAY' && $res->[0] == 500))
       ) {
+        _traces(refaddr($trace), $trace);
         my $text = render_text(
             $trace, $env,
             application_caller_subroutine =>
@@ -181,6 +206,57 @@ sub frame_filter {
     \@filtered_frames;
 } ## end sub frame_filter
 
+sub internal_call {
+    my ($env, %opt) = @_;
+    my $request = Plack::Request->new($env);
+    if ($opt{method} eq 'eval') {
+        my $param = decode_json($request->content);
+        my $idx = $param->{index};
+        my $source = $param->{source};
+
+        my $trace = _traces($opt{id});
+        unless ($trace) {
+            return {error => 'REPL unavailable in this stack frame'};
+        }
+        my @frames = $trace->frames;
+        my $frame = $frames[$idx];
+        unless ($frame) {
+            return {error => 'REPL unavailable in this stack frame'};
+        }
+        my $next_frame = ($idx > $#frames - 1) ? undef : $frames[ $idx + 1 ];
+        my @args = $next_frame ? $next_frame->args : ();
+
+        my @ret = eval {
+            my $code = Eval::Closure::eval_closure(
+                source      => "sub {\n();\n$source\n}",
+                environment => ($frame->lexicals || {}),
+                terse_error => 1,
+                alias       => 1,
+            );
+            $code->(@args);
+        };
+
+        my $result = '';
+        if ($@) {
+            $result = $@;
+            $result =~ s/\s+$//;
+            $result .= "\n";
+        }
+        if (@ret) {
+            $result = $dumper->(@ret == 1 ? $ret[0] : \@ret) . "\n";
+        }
+
+        return {
+            result            => $result,
+            highlighted_input => $source,
+            prompt            => '>>',
+            prefilled_input   => '',
+        };
+    }
+
+    return {};
+}
+
 sub context_html {
     my $frame   = shift;
     my $file    = $frame->filename;
@@ -246,7 +322,8 @@ sub render_html {
             variables_info => variables_info_html(),
         },
         function => {
-            dump => $dumper,
+            dump         => $dumper,
+            repl_enabled => sub { !$psgi_env->{'psgi.multiprocess'} },
         }
     );
 
@@ -259,6 +336,7 @@ sub render_html {
             backtrace_frames => $backtrace_frames,
             request          => $request,
             message          => $message,
+            id               => refaddr($trace),
         }
     );
 } ## end sub render_html
@@ -988,9 +1066,7 @@ sub base_html {
     var allFrameInfos = document.querySelectorAll(".frame_info");
 
     function apiCall(method, opts, cb) {
-        // TODO: implement it
-        return;
-        var OID = '';
+        var OID = '[% id %]';
         var req = new XMLHttpRequest();
         req.open("POST", "/__better_errors/" + OID + "/" + method, true);
         req.setRequestHeader("Content-Type", "application/json");
@@ -1134,12 +1210,10 @@ sub base_html {
 
             el.loaded = true;
 
-            /*
             var repl = el.querySelector(".repl .console");
             if(repl) {
                 new REPL(index).install(repl);
             }
-            */
 
             switchTo(el);
         }
@@ -1207,17 +1281,23 @@ sub variables_info_html {
 
     [% html_formatted_code_block | raw %]
 
-    <!--div class="repl">
+    [% IF repl_enabled() %]
+    <div class="repl">
         <div class="console">
             <pre></pre>
             <div class="prompt"><span>&gt;&gt;</span> <input/></div>
         </div>
-    </div-->
+    </div>
+    [% END %]
 </header>
 
-<!--div class="hint">
-    TODO: Live Shell (REPL) is not implemented yet.
-</div-->
+<div class="hint">
+[% IF repl_enabled() %]
+    This is a live shell. Type in here.
+[% ELSE %]
+    Live shell is disabled in a multi-process mode.
+[% END %]
+</div>
 
 <div class="variable_info"></div>
 
@@ -1301,11 +1381,10 @@ Tasuku SUENAGA a.k.a. gunyarakun E<lt>tasuku-s-github@titech.acE<gt>
 
 =head1 TODO
 
-- REPL
 - JSON response
 
 =head1 SEE ALSO
 
-L<Plack::Middleware::StackTrace> L<Devel::StackTrace::AsHTML> L<Plack::Middleware> L<Plack::Middleware::HTTPExceptions>
+L<Plack::Middleware::StackTrace> L<Devel::StackTrace::AsHTML> L<Plack::Middleware> L<Plack::Middleware::HTTPExceptions> L<Plack::Middleware::InteractiveDebugger>
 
 =cut

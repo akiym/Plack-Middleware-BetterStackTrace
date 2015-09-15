@@ -5,6 +5,7 @@ requires 'Plack',                           '1.0023';
 requires 'Text::Xslate',                    '>=2.00';
 requires 'Term::ANSIColor',                 '>=4.00';
 requires 'Devel::StackTrace::WithLexicals', '0.10';
+requires 'Eval::Closure',                   '0.13';
 
 on 'test' => sub {
     requires 'Test::More', '0.98';
