@@ -36,7 +36,7 @@ my $dumper = sub {
     my $value = shift;
     $value = $$value if ref $value eq 'SCALAR' or ref $value eq 'REF';
     my $d = Data::Dumper->new([$value]);
-    $d->Indent(1)->Useqq(1)->Terse(1)->Deparse(1);
+    $d->Indent(1)->Useqq(1)->Terse(1)->Sortkeys(1)->Deparse(1);
     chomp(my $dump = $d->Dump);
     $dump;
 };
